@@ -7,7 +7,7 @@ import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} f
 import Video from 'react-native-video';
 import Svg, {Line} from 'react-native-svg';
 import {db, storage} from './firebase';
-import {collection, addDoc, getDocs, query, orderBy} from 'firebase/firestore';
+import {collection, addDoc, getDocs, query, orderBy, where} from 'firebase/firestore';
 import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 
@@ -30,56 +30,80 @@ const viewabilityConfig = {
 };
 
 /* Feed Screen: Fetches video docs from Firestore and plays each video with an overlaid wireframe */
-const FeedScreen = () => {
+const FeedScreen = ({ navigation }) => {
   const [videos, setVideos] = useState([]);
-  const [pausedStates, setPausedStates] = useState({});
+  const [activeVideoId, setActiveVideoId] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const screenHeight = Dimensions.get('window').height;
   const bottomTabHeight = 49;
 
+  const fetchNewVideos = async () => {
+    const lastVideoTime = videos[0]?.createdAt || Date.now();
+    const videosQuery = query(
+      collection(db, "videos"),
+      orderBy("createdAt", "desc"),
+      where("createdAt", ">", lastVideoTime)
+    );
+    const querySnapshot = await getDocs(videosQuery);
+    const newVids = [];
+    querySnapshot.forEach(doc => newVids.push({ id: doc.id, ...doc.data() }));
+    if (newVids.length) setVideos(prev => [...newVids, ...prev]);
+    return newVids.length;
+  };
+
+  const loadInitial = async () => {
+    const videosQuery = query(collection(db, "videos"), orderBy("createdAt", "desc"));
+    const querySnapshot = await getDocs(videosQuery);
+    const vids = [];
+    querySnapshot.forEach(doc => vids.push({ id: doc.id, ...doc.data() }));
+    setVideos(vids);
+    if (vids.length > 0) setActiveVideoId(vids[0].id);
+    setIsLoading(false);
+  };
+
   useEffect(() => {
-    (async () => {
-      const videosQuery = query(collection(db, "videos"), orderBy("createdAt", "desc"));
-      const querySnapshot = await getDocs(videosQuery);
-      const vids = [];
-      querySnapshot.forEach(doc => vids.push({ id: doc.id, ...doc.data() }));
-      setVideos(vids);
-      // Initialize first video as playing, rest as paused
-      const initialPausedStates = {};
-      vids.forEach((vid, index) => initialPausedStates[vid.id] = index !== 0);
-      setPausedStates(initialPausedStates);
-    })();
+    loadInitial();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', fetchNewVideos);
+    return unsubscribe;
+  }, [navigation, videos]);
+
+  if (isLoading) {
+    return (
+      <View style={[styles.center, {backgroundColor: 'black'}]}>
+        <ActivityIndicator size="large" color="white" />
+      </View>
+    );
+  }
 
   return (
     <FlatList
       data={videos}
       keyExtractor={item => item.id}
       pagingEnabled
-      showsVerticalScrollIndicator={false}
       snapToInterval={screenHeight - bottomTabHeight}
       decelerationRate="fast"
-      onLayout={() => {
-        if (videos.length > 0) {
-          setPausedStates(prev => ({...prev, [videos[0].id]: false}));
-        }
+      disableIntervalMomentum
+      snapToAlignment="start"
+      refreshing={refreshing}
+      onRefresh={async () => {
+        setRefreshing(true);
+        await fetchNewVideos();
+        setRefreshing(false);
       }}
       onViewableItemsChanged={({viewableItems}) => {
         if (viewableItems.length > 0) {
-          const newPausedStates = {...pausedStates};
-          videos.forEach(video => {
-            newPausedStates[video.id] = !viewableItems.some(item => item.item.id === video.id);
-          });
-          setPausedStates(newPausedStates);
+          setActiveVideoId(viewableItems[0].item.id);
         }
       }}
       viewabilityConfig={viewabilityConfig}
       renderItem={({item}) => (
         <TouchableOpacity 
           activeOpacity={1}
-          onPress={() => setPausedStates(prev => ({
-            ...prev,
-            [item.id]: !prev[item.id]
-          }))}
+          onPress={() => setActiveVideoId(activeVideoId === item.id ? null : item.id)}
           style={{height: screenHeight - bottomTabHeight}}
         >
           <Video 
@@ -87,9 +111,7 @@ const FeedScreen = () => {
             style={StyleSheet.absoluteFill}
             resizeMode="cover"
             repeat
-            playInBackground={false}
-            paused={pausedStates[item.id] ?? false}
-            muted
+            paused={activeVideoId !== item.id}
           />
         </TouchableOpacity>
       )}
