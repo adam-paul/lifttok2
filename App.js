@@ -1,13 +1,13 @@
 // App.js
 import React, {useState, useEffect, useRef} from 'react';
-import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions} from 'react-native';
+import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions, ActivityIndicator} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
-import {Camera, useCameraDevices} from 'react-native-vision-camera';
+import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} from 'react-native-vision-camera';
 import Video from 'react-native-video';
 import Svg, {Line} from 'react-native-svg';
 import {db, storage} from './firebase';
-import {collection, addDoc, getDocs} from 'firebase/firestore';
+import {collection, addDoc, getDocs, query, orderBy} from 'firebase/firestore';
 import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 
@@ -25,6 +25,10 @@ const WireframeOverlay = () => (
   </Svg>
 );
 
+const viewabilityConfig = {
+  itemVisiblePercentThreshold: 50
+};
+
 /* Feed Screen: Fetches video docs from Firestore and plays each video with an overlaid wireframe */
 const FeedScreen = () => {
   const [videos, setVideos] = useState([]);
@@ -34,7 +38,8 @@ const FeedScreen = () => {
 
   useEffect(() => {
     (async () => {
-      const querySnapshot = await getDocs(collection(db, "videos"));
+      const videosQuery = query(collection(db, "videos"), orderBy("createdAt", "desc"));
+      const querySnapshot = await getDocs(videosQuery);
       const vids = [];
       querySnapshot.forEach(doc => vids.push({ id: doc.id, ...doc.data() }));
       setVideos(vids);
@@ -67,9 +72,7 @@ const FeedScreen = () => {
           setPausedStates(newPausedStates);
         }
       }}
-      viewabilityConfig={{
-        itemVisiblePercentThreshold: 50
-      }}
+      viewabilityConfig={viewabilityConfig}
       renderItem={({item}) => (
         <TouchableOpacity 
           activeOpacity={1}
@@ -97,44 +100,104 @@ const FeedScreen = () => {
 /* Record Screen: Displays the VisionCamera preview with a wireframe overlay and a record button.
    When pressed, it records a video, uploads it to Firebase Storage, and adds a Firestore doc. */
 const RecordScreen = () => {
-  const [hasPermission, setHasPermission] = useState(false);
+  const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
+  const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } = useMicrophonePermission();
   const [recording, setRecording] = useState(false);
-  const devices = useCameraDevices();
-  const device = devices.back;
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [isFront, setIsFront] = useState(false);
+  const device = useCameraDevice(isFront ? 'front' : 'back');
   const cameraRef = useRef(null);
   
   useEffect(() => {
     (async () => {
-      const status = await Camera.requestCameraPermission();
-      setHasPermission(status === 'authorized');
+      if (!hasCameraPermission) await requestCameraPermission();
+      if (!hasMicPermission) await requestMicPermission();
     })();
-  }, []);
+  }, [hasCameraPermission, hasMicPermission]);
+
+  const toggleCamera = () => setIsFront(!isFront);
   
-  const recordVideo = async () => {
-    if (cameraRef.current && !recording) {
-      setRecording(true);
-      // recordAsync resolves when recording stops (for simplicity we record until user stops)
-      const video = await cameraRef.current.recordAsync();
+  const toggleRecording = async () => {
+    if (!device || !cameraRef.current) return;
+    
+    try {
+      if (recording) {
+        setRecording(false);
+        await cameraRef.current.stopRecording();
+      } else {
+        setRecording(true);
+        await cameraRef.current.startRecording({
+          onRecordingFinished: async (video) => {
+            try {
+              setUploading(true);
+              setUploadSuccess(false);
+              const filename = `videos/${Date.now()}.mp4`;
+              const storageRef = ref(storage, filename);
+              const response = await fetch(`file://${video.path}`);
+              const blob = await response.blob();
+              await uploadBytes(storageRef, blob);
+              const videoUrl = await getDownloadURL(storageRef);
+              await addDoc(collection(db, "videos"), { videoUrl, createdAt: Date.now() });
+              setUploadSuccess(true);
+              setTimeout(() => {
+                setUploading(false);
+                setUploadSuccess(false);
+              }, 1500);
+            } catch {
+              setUploading(false);
+            }
+          },
+          onRecordingError: () => setRecording(false),
+        });
+      }
+    } catch {
       setRecording(false);
-      // Upload video file (convert local uri to blob)
-      const response = await fetch(video.uri);
-      const blob = await response.blob();
-      const filename = `videos/${Date.now()}.mp4`;
-      const storageRef = ref(storage, filename);
-      await uploadBytes(storageRef, blob);
-      const videoUrl = await getDownloadURL(storageRef);
-      await addDoc(collection(db, "videos"), { url: videoUrl, createdAt: Date.now() });
     }
   };
   
-  if (!device || !hasPermission) return <Text>Loading Camera...</Text>;
+  if (!hasCameraPermission || !hasMicPermission) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.text}>
+          {`${!hasCameraPermission ? 'Camera' : ''}${!hasCameraPermission && !hasMicPermission ? ' and ' : ''}${!hasMicPermission ? 'Microphone' : ''} access is required.`}
+        </Text>
+      </View>
+    );
+  }
+  
+  if (!device) return <View style={styles.center}><Text style={styles.text}>Loading camera...</Text></View>;
   
   return (
     <View style={{flex:1}}>
-      <Camera style={{flex:1}} device={device} isActive ref={cameraRef} />
-      <WireframeOverlay />
-      <TouchableOpacity onPress={recordVideo} style={styles.recordButton}>
-        <Text style={{color:'#fff'}}>{recording ? 'Recording...' : 'Record'}</Text>
+      <Camera
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={!uploading}
+        video
+        audio
+      />
+      {uploading && (
+        <View style={styles.uploadingOverlay}>
+          {!uploadSuccess ? (
+            <>
+              <ActivityIndicator size="large" color="white" />
+              <Text style={[styles.text, {marginTop: 10}]}>Uploading video...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="checkmark-circle" size={50} color="#4CAF50" />
+              <Text style={[styles.text, {marginTop: 10}]}>Success!</Text>
+            </>
+          )}
+        </View>
+      )}
+      <TouchableOpacity onPress={toggleCamera} style={styles.flipButton}>
+        <Ionicons name="camera-reverse" size={30} color="white" />
+      </TouchableOpacity>
+      <TouchableOpacity onPress={toggleRecording} style={styles.recordButton} disabled={uploading}>
+        <View style={[styles.recordIndicator, recording && styles.recording]} />
       </TouchableOpacity>
     </View>
   );
@@ -192,9 +255,49 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'black'
+  },
+  text: {
+    color: 'white'
+  },
+  flipButton: {
+    position: 'absolute',
+    top: 10,
+    right: 20,
+    padding: 10
+  },
   recordButton: {
-    position: 'absolute', bottom: 50, alignSelf: 'center',
-    backgroundColor: 'red', padding: 20, borderRadius: 50,
+    position: 'absolute',
+    bottom: 50,
+    alignSelf: 'center',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  recordIndicator: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'red'
+  },
+  recording: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: 'red'
+  },
+  uploadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 
