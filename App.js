@@ -10,6 +10,26 @@ import {db, storage} from './firebase';
 import {collection, addDoc, getDocs, query, orderBy, where} from 'firebase/firestore';
 import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
 import Ionicons from 'react-native-vector-icons/Ionicons';
+import {runOnJS} from 'react-native-reanimated';
+
+// Frame processor worklet
+const frameProcessor = (frame) => {
+  'worklet';
+  // Skip frames for performance (process every 3rd frame)
+  if (frame.frameNumber % 3 !== 0) return;
+  
+  try {
+    // Convert frame to proper format if needed
+    // This will be expanded in Phase 2 when we add MediaPipe
+    
+    // For now, just log frame info for debugging
+    runOnJS(console.log)(`Processing frame: ${frame.frameNumber}`);
+    
+  } catch (error) {
+    // Error handling
+    runOnJS(console.error)(`Frame processing error: ${error.message}`);
+  }
+};
 
 /* A dummy "comprehensive" wireframe overlay – in a real app this would be driven by pose-detection */
 const WireframeOverlay = () => (
@@ -199,6 +219,8 @@ const RecordScreen = () => {
         isActive={!uploading}
         video
         audio
+        frameProcessor={frameProcessor}
+        frameProcessorFps={30}
       />
       {uploading && (
         <View style={styles.uploadingOverlay}>
