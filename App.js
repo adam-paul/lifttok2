@@ -5,7 +5,7 @@ import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} from 'react-native-vision-camera';
 import Video from 'react-native-video';
-import Svg, {Line} from 'react-native-svg';
+import Svg, {Line, Circle} from 'react-native-svg';
 import {db, storage} from './firebase';
 import {collection, addDoc, getDocs, query, orderBy, where} from 'firebase/firestore';
 import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
@@ -13,28 +13,73 @@ import Ionicons from 'react-native-vector-icons/Ionicons';
 
 const {PoseDetectionModule} = NativeModules;
 
+// Constants for pose connections
+const POSE_CONNECTIONS = [
+  ['leftShoulder', 'rightShoulder'],
+  ['leftShoulder', 'leftElbow'],
+  ['leftElbow', 'leftWrist'],
+  ['rightShoulder', 'rightElbow'],
+  ['rightElbow', 'rightWrist'],
+  ['leftShoulder', 'leftHip'],
+  ['rightShoulder', 'rightHip'],
+  ['leftHip', 'rightHip'],
+  ['leftHip', 'leftKnee'],
+  ['leftKnee', 'leftAnkle'],
+  ['rightHip', 'rightKnee'],
+  ['rightKnee', 'rightAnkle']
+];
+
+// Memoized line component for better performance
+const PoseLine = React.memo(({ startPoint, endPoint }) => {
+  if (!startPoint || !endPoint || 
+      startPoint.visibility < 0.5 || 
+      endPoint.visibility < 0.5) return null;
+  
+  return (
+    <Line
+      x1={startPoint.x}
+      y1={startPoint.y}
+      x2={endPoint.x}
+      y2={endPoint.y}
+      stroke="#4CAF50"
+      strokeWidth="2"
+    />
+  );
+});
+
+// Memoized point component for better performance
+const PosePoint = React.memo(({ point }) => {
+  if (!point || point.visibility < 0.5) return null;
+  
+  return (
+    <Circle
+      cx={point.x}
+      cy={point.y}
+      r="3"
+      fill="#4CAF50"
+    />
+  );
+});
+
 // Dynamic wireframe overlay based on pose data
-const WireframeOverlay = ({poseData}) => {
-  if (!poseData || poseData.length === 0) return null;
+const WireframeOverlay = React.memo(({poseData}) => {
+  if (!poseData) return null;
   
   return (
     <Svg style={StyleSheet.absoluteFill}>
-      {poseData.map((point, index) => (
-        point.visibility > 0.5 && (
-          <Line
-            key={index}
-            x1={point.x}
-            y1={point.y}
-            x2={point.x}
-            y2={point.y}
-            stroke="lime"
-            strokeWidth="2"
-          />
-        )
+      {POSE_CONNECTIONS.map(([start, end], index) => (
+        <PoseLine
+          key={`${start}-${end}`}
+          startPoint={poseData[start]}
+          endPoint={poseData[end]}
+        />
+      ))}
+      {Object.entries(poseData).map(([key, point]) => (
+        <PosePoint key={key} point={point} />
       ))}
     </Svg>
   );
-};
+});
 
 const viewabilityConfig = {
   itemVisiblePercentThreshold: 50
@@ -142,57 +187,88 @@ const RecordScreen = () => {
   const [isPoseDetected, setIsPoseDetected] = useState(false);
   const device = useCameraDevice(isFront ? 'front' : 'back');
   const cameraRef = useRef(null);
+  const cleanupInterval = useRef(null);
+  const lastProcessedTime = useRef(0);
+  const processingFrame = useRef(false);
+  
+  // Add cache cleanup function
+  const cleanupCache = async () => {
+    try {
+      const response = await NativeModules.PoseDetectionModule.cleanupCache();
+      console.log('Cache cleanup completed:', response);
+    } catch (error) {
+      console.log('Cache cleanup error:', error);
+    }
+  };
+  
+  useEffect(() => {
+    // Start periodic cache cleanup
+    cleanupInterval.current = setInterval(cleanupCache, 5000); // Cleanup every 5 seconds
+    
+    return () => {
+      if (cleanupInterval.current) {
+        clearInterval(cleanupInterval.current);
+      }
+      // Final cleanup when component unmounts
+      cleanupCache();
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log(`Pose detection: ${isPoseDetected ? 'DETECTED' : 'NOT DETECTED'}`);
+  }, [isPoseDetected]);
   
   useEffect(() => {    
-    if (!device || !cameraRef.current) {
-      console.log('Missing camera dependencies:', { device: !!device, ref: !!cameraRef.current });
-      return;
-    }
+    if (!device || !cameraRef.current) return;
 
-    console.log('Starting pose detection interval');
     const frameInterval = setInterval(async () => {
+      // Skip if we're still processing the last frame or if not enough time has passed
+      const now = Date.now();
+      if (processingFrame.current || now - lastProcessedTime.current < 300) {
+        return;
+      }
+
+      processingFrame.current = true;
       try {
-        console.log('Capturing frame...');
         const frame = await cameraRef.current.takePhoto({
           qualityPrioritization: 'speed',
           skipMetadata: true,
           flash: 'off',
           enableAutoStabilization: false,
-          enableShutterSound: false
-        });
-        console.log(`Frame captured: ${frame.width}x${frame.height}`);
-        console.log('Frame data:', {
-          path: frame.path,
-          type: typeof frame.data,
-          isArray: Array.isArray(frame.data),
-          keys: Object.keys(frame)
+          enableShutterSound: false,
+          width: 480,
+          height: 360
         });
         
-        if (!frame.path) {
-          console.warn('No frame path available');
-          return;
-        }
+        if (!frame.path) return;
 
-        console.log('Sending frame to pose detection...');
         const result = await NativeModules.PoseDetectionModule.detectPose(
           frame.path,
           frame.width,
           frame.height
         );
         
-        console.log('Pose detection result:', result.poseDetected ? 'DETECTED' : 'NOT DETECTED');
+        lastProcessedTime.current = now;
         setIsPoseDetected(!!result.poseDetected);
         setPoseData(result.landmarks || null);
+        
+        // Cleanup immediately after processing
+        try {
+          await cleanupCache();
+        } catch (error) {
+          // Ignore cleanup errors
+        }
       } catch (error) {
-        console.warn('Frame processing error:', error);
         setIsPoseDetected(false);
         setPoseData(null);
+      } finally {
+        processingFrame.current = false;
       }
-    }, 100);
+    }, 300);  // Increased interval to 300ms
 
     return () => {
-      console.log('Cleaning up pose detection interval');
       clearInterval(frameInterval);
+      cleanupCache();
     };
   }, [device, cameraRef.current]);
 
@@ -209,7 +285,10 @@ const RecordScreen = () => {
     })();
   }, []); // Only run on mount
   
-  const toggleCamera = () => setIsFront(!isFront);
+  const toggleCamera = () => {
+    cleanupCache();  // Cleanup when switching camera
+    setIsFront(!isFront);
+  };
   
   const toggleRecording = async () => {
     if (!device || !cameraRef.current) return;
@@ -218,7 +297,9 @@ const RecordScreen = () => {
       if (recording) {
         setRecording(false);
         await cameraRef.current.stopRecording();
+        await cleanupCache();  // Cleanup after stopping recording
       } else {
+        await cleanupCache();  // Cleanup before starting recording
         setRecording(true);
         await cameraRef.current.startRecording({
           onRecordingFinished: async (video) => {
