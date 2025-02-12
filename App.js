@@ -1,6 +1,6 @@
 // App.js
 import React, {useState, useEffect, useRef} from 'react';
-import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions, ActivityIndicator} from 'react-native';
+import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions, ActivityIndicator, NativeModules} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} from 'react-native-vision-camera';
@@ -10,40 +10,31 @@ import {db, storage} from './firebase';
 import {collection, addDoc, getDocs, query, orderBy, where} from 'firebase/firestore';
 import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import {runOnJS} from 'react-native-reanimated';
 
-// Frame processor worklet
-const frameProcessor = (frame) => {
-  'worklet';
-  // Skip frames for performance (process every 3rd frame)
-  if (frame.frameNumber % 3 !== 0) return;
+const {PoseDetectionModule} = NativeModules;
+
+// Dynamic wireframe overlay based on pose data
+const WireframeOverlay = ({poseData}) => {
+  if (!poseData || poseData.length === 0) return null;
   
-  try {
-    // Convert frame to proper format if needed
-    // This will be expanded in Phase 2 when we add MediaPipe
-    
-    // For now, just log frame info for debugging
-    runOnJS(console.log)(`Processing frame: ${frame.frameNumber}`);
-    
-  } catch (error) {
-    // Error handling
-    runOnJS(console.error)(`Frame processing error: ${error.message}`);
-  }
+  return (
+    <Svg style={StyleSheet.absoluteFill}>
+      {poseData.map((point, index) => (
+        point.visibility > 0.5 && (
+          <Line
+            key={index}
+            x1={point.x}
+            y1={point.y}
+            x2={point.x}
+            y2={point.y}
+            stroke="lime"
+            strokeWidth="2"
+          />
+        )
+      ))}
+    </Svg>
+  );
 };
-
-/* A dummy "comprehensive" wireframe overlay – in a real app this would be driven by pose-detection */
-const WireframeOverlay = () => (
-  <Svg style={StyleSheet.absoluteFill}>
-    {/* Spine */}
-    <Line x1="50%" y1="10%" x2="50%" y2="90%" stroke="lime" strokeWidth="2"/>
-    {/* Shoulders */}
-    <Line x1="50%" y1="30%" x2="30%" y2="50%" stroke="lime" strokeWidth="2"/>
-    <Line x1="50%" y1="30%" x2="70%" y2="50%" stroke="lime" strokeWidth="2"/>
-    {/* Arms */}
-    <Line x1="50%" y1="50%" x2="35%" y2="70%" stroke="lime" strokeWidth="2"/>
-    <Line x1="50%" y1="50%" x2="65%" y2="70%" stroke="lime" strokeWidth="2"/>
-  </Svg>
-);
 
 const viewabilityConfig = {
   itemVisiblePercentThreshold: 50
@@ -139,8 +130,7 @@ const FeedScreen = ({ navigation }) => {
   );
 };
 
-/* Record Screen: Displays the VisionCamera preview with a wireframe overlay and a record button.
-   When pressed, it records a video, uploads it to Firebase Storage, and adds a Firestore doc. */
+/* Record Screen: Displays the camera preview with a wireframe overlay and a record button */
 const RecordScreen = () => {
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
   const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } = useMicrophonePermission();
@@ -148,16 +138,77 @@ const RecordScreen = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [isFront, setIsFront] = useState(false);
+  const [poseData, setPoseData] = useState(null);
+  const [isPoseDetected, setIsPoseDetected] = useState(false);
   const device = useCameraDevice(isFront ? 'front' : 'back');
   const cameraRef = useRef(null);
   
+  useEffect(() => {    
+    if (!device || !cameraRef.current) {
+      console.log('Missing camera dependencies:', { device: !!device, ref: !!cameraRef.current });
+      return;
+    }
+
+    console.log('Starting pose detection interval');
+    const frameInterval = setInterval(async () => {
+      try {
+        console.log('Capturing frame...');
+        const frame = await cameraRef.current.takePhoto({
+          qualityPrioritization: 'speed',
+          skipMetadata: true,
+          flash: 'off',
+          enableAutoStabilization: false,
+          enableShutterSound: false
+        });
+        console.log(`Frame captured: ${frame.width}x${frame.height}`);
+        console.log('Frame data:', {
+          path: frame.path,
+          type: typeof frame.data,
+          isArray: Array.isArray(frame.data),
+          keys: Object.keys(frame)
+        });
+        
+        if (!frame.path) {
+          console.warn('No frame path available');
+          return;
+        }
+
+        console.log('Sending frame to pose detection...');
+        const result = await NativeModules.PoseDetectionModule.detectPose(
+          frame.path,
+          frame.width,
+          frame.height
+        );
+        
+        console.log('Pose detection result:', result.poseDetected ? 'DETECTED' : 'NOT DETECTED');
+        setIsPoseDetected(!!result.poseDetected);
+        setPoseData(result.landmarks || null);
+      } catch (error) {
+        console.warn('Frame processing error:', error);
+        setIsPoseDetected(false);
+        setPoseData(null);
+      }
+    }, 100);
+
+    return () => {
+      console.log('Cleaning up pose detection interval');
+      clearInterval(frameInterval);
+    };
+  }, [device, cameraRef.current]);
+
   useEffect(() => {
     (async () => {
-      if (!hasCameraPermission) await requestCameraPermission();
-      if (!hasMicPermission) await requestMicPermission();
+      if (!hasCameraPermission) {
+        const granted = await requestCameraPermission();
+        console.log('Camera permission result:', granted);
+      }
+      if (!hasMicPermission) {
+        const granted = await requestMicPermission();
+        console.log('Microphone permission result:', granted);
+      }
     })();
-  }, [hasCameraPermission, hasMicPermission]);
-
+  }, []); // Only run on mount
+  
   const toggleCamera = () => setIsFront(!isFront);
   
   const toggleRecording = async () => {
@@ -201,9 +252,7 @@ const RecordScreen = () => {
   if (!hasCameraPermission || !hasMicPermission) {
     return (
       <View style={styles.center}>
-        <Text style={styles.text}>
-          {`${!hasCameraPermission ? 'Camera' : ''}${!hasCameraPermission && !hasMicPermission ? ' and ' : ''}${!hasMicPermission ? 'Microphone' : ''} access is required.`}
-        </Text>
+        <Text style={styles.text}>Camera and microphone access is required.</Text>
       </View>
     );
   }
@@ -217,11 +266,21 @@ const RecordScreen = () => {
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={!uploading}
+        photo
         video
         audio
-        frameProcessor={frameProcessor}
-        frameProcessorFps={30}
       />
+      {poseData && <WireframeOverlay poseData={poseData} />}
+      
+      {/* Pose Detection Indicator */}
+      <View style={styles.poseIndicator}>
+        <Ionicons 
+          name="person" 
+          size={24} 
+          color={isPoseDetected ? '#4CAF50' : '#666'} 
+        />
+      </View>
+
       {uploading && (
         <View style={styles.uploadingOverlay}>
           {!uploadSuccess ? (
@@ -255,7 +314,7 @@ const ProfileScreen = () => (
 );
 
 const Tab = createBottomTabNavigator();
-export default function App() {
+const App = () => {
   return (
     <NavigationContainer>
       <Tab.Navigator
@@ -296,7 +355,9 @@ export default function App() {
       </Tab.Navigator>
     </NavigationContainer>
   );
-}
+};
+
+export default App;
 
 const styles = StyleSheet.create({
   center: {
@@ -342,6 +403,26 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.8)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  permissionButton: {
+    marginTop: 20,
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  permissionButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  poseIndicator: {
+    position: 'absolute',
+    top: 20,
+    left: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 8,
+    borderRadius: 20,
   },
 });
 
