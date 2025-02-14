@@ -132,8 +132,7 @@ const VideoItem = React.memo(({ item, isActive, height, onPress, videoRef }) => 
   const [videoDimensions, setVideoDimensions] = useState(null);
   const [currentPoseData, setCurrentPoseData] = useState(null);
   const screenDimensions = Dimensions.get('window');
-  const playbackStartTime = useRef(null);
-  const animationFrame = useRef(null);
+  const videoProgress = useRef(0);
 
   const transformPoseData = (poseData, videoDims) => {
     if (!poseData) return null;
@@ -154,39 +153,18 @@ const VideoItem = React.memo(({ item, isActive, height, onPress, videoRef }) => 
   };
 
   // Update pose data based on video progress
-  const updatePoseData = () => {
-    if (!isActive || !item.poseData || !playbackStartTime.current) return;
+  const updatePoseData = (currentTimeMillis) => {
+    if (!isActive || !item.poseData) return;
     
-    const currentTime = Date.now() - playbackStartTime.current;
     const currentFrame = item.poseData.find((frame, index) => {
       const nextFrame = item.poseData[index + 1];
-      return frame.timestamp <= currentTime && (!nextFrame || nextFrame.timestamp > currentTime);
+      return frame.timestamp <= currentTimeMillis && (!nextFrame || nextFrame.timestamp > currentTimeMillis);
     });
 
     if (currentFrame) {
       setCurrentPoseData(transformPoseData(currentFrame, videoDimensions));
     }
-
-    animationFrame.current = requestAnimationFrame(updatePoseData);
   };
-
-  useEffect(() => {
-    if (isActive && item.poseData) {
-      playbackStartTime.current = Date.now();
-      updatePoseData();
-    } else {
-      if (animationFrame.current) {
-        cancelAnimationFrame(animationFrame.current);
-      }
-      setCurrentPoseData(null);
-    }
-
-    return () => {
-      if (animationFrame.current) {
-        cancelAnimationFrame(animationFrame.current);
-      }
-    };
-  }, [isActive, item.poseData]);
 
   return (
     <TouchableOpacity 
@@ -212,23 +190,24 @@ const VideoItem = React.memo(({ item, isActive, height, onPress, videoRef }) => 
         maxBitRate={2000000}
         ignoreSilentSwitch="ignore"
         onError={(error) => console.log('Video error:', error)}
-        onBuffer={({isBuffering: buffering}) => setIsBuffering(buffering)}
+        onBuffer={({isBuffering: buffering}) => {
+          setIsBuffering(buffering);
+          // If buffering, keep the last pose data visible
+        }}
         onLoad={(data) => {
           setIsBuffering(false);
           setVideoDimensions({
             width: data.naturalSize.width,
             height: data.naturalSize.height
           });
-          if (isActive && item.poseData) {
-            playbackStartTime.current = Date.now();
-          }
         }}
-        onEnd={() => {
-          if (isActive && item.poseData) {
-            playbackStartTime.current = Date.now();
-          }
+        onProgress={({currentTime}) => {
+          // Convert to milliseconds to match our timestamp format
+          const currentTimeMillis = currentTime * 1000;
+          videoProgress.current = currentTimeMillis;
+          updatePoseData(currentTimeMillis % (item.poseData?.[item.poseData.length - 1]?.timestamp || 0));
         }}
-        progressUpdateInterval={1000}
+        progressUpdateInterval={30}  // Update more frequently for smoother animation
         playInBackground={false}
         controls={false}
         muted={!isActive}
@@ -507,6 +486,14 @@ const RecordScreen = ({ navigation }) => {
         });
         
         if (!frame.path) return;
+
+        // Log every 10th frame
+        if (skippedFramesRef.current % 10 === 0) {
+          console.log(`Frame dimensions: ${frame.width}x${frame.height}`);
+          console.log(`Screen dimensions: ${dimensions.width}x${dimensions.height}`);
+          console.log(`Memory pressure: ${memoryPressureRef.current ? 'YES' : 'NO'}`);
+          console.log('---');
+        }
 
         const result = await NativeModules.PoseDetectionModule.detectPose(
           frame.path,
