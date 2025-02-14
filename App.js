@@ -1,6 +1,6 @@
 // App.js
-import React, {useState, useEffect, useRef} from 'react';
-import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions, ActivityIndicator, NativeModules} from 'react-native';
+import React, {useState, useEffect, useRef, useCallback} from 'react';
+import {View, Text, TouchableOpacity, FlatList, StyleSheet, Dimensions, ActivityIndicator, NativeModules, BackHandler, Image} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} from 'react-native-vision-camera';
@@ -226,17 +226,49 @@ const VideoItem = React.memo(({ item, isActive, height, onPress, videoRef }) => 
 });
 
 /* Feed Screen: Fetches video docs from Firestore and plays each video with an overlaid wireframe */
-const FeedScreen = ({ navigation }) => {
-  const [videos, setVideos] = useState([]);
-  const [activeVideoId, setActiveVideoId] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+const FeedScreen = ({ navigation, initialVideo, videos: initialVideos, onClose }) => {
+  const [videos, setVideos] = useState(initialVideos || []);
+  const [activeVideoId, setActiveVideoId] = useState(initialVideo?.id || null);
+  const [isLoading, setIsLoading] = useState(!initialVideos);
   const [refreshing, setRefreshing] = useState(false);
   const [lastDoc, setLastDoc] = useState(null);
   const screenHeight = Dimensions.get('window').height;
   const bottomTabHeight = 49;
   const videoRefs = useRef({});
 
+  // Get initial index for scrolling
+  const initialScrollIndex = initialVideo ? videos.findIndex(v => v.id === initialVideo.id) : 0;
+
+  // Required for initialScrollIndex to work
+  const getItemLayout = (data, index) => ({
+    length: screenHeight - bottomTabHeight,
+    offset: (screenHeight - bottomTabHeight) * index,
+    index,
+  });
+
+  // Handle hardware back button
+  useEffect(() => {
+    if (!initialVideo) return;
+
+    const backAction = () => {
+      if (onClose) {
+        onClose();
+        return true;
+      }
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    return () => backHandler.remove();
+  }, [initialVideo, onClose]);
+
   const fetchVideos = async (lastDocument = null) => {
+    if (initialVideos) return initialVideos;
+    
     try {
       const queryConstraints = [
         orderBy("createdAt", "desc"),
@@ -269,6 +301,13 @@ const FeedScreen = ({ navigation }) => {
   };
 
   const loadInitial = async () => {
+    if (initialVideos) {
+      setVideos(initialVideos);
+      if (initialVideo) setActiveVideoId(initialVideo.id);
+      setIsLoading(false);
+      return;
+    }
+
     const vids = await fetchVideos();
     setVideos(vids);
     if (vids.length > 0) setActiveVideoId(vids[0].id);
@@ -276,7 +315,7 @@ const FeedScreen = ({ navigation }) => {
   };
 
   const loadMore = async () => {
-    if (!lastDoc) return;
+    if (initialVideos || !lastDoc) return;
     const newVids = await fetchVideos(lastDoc);
     if (newVids.length > 0) {
       setVideos(prev => [...prev, ...newVids]);
@@ -298,6 +337,7 @@ const FeedScreen = ({ navigation }) => {
   }, []);
 
   useEffect(() => {
+    if (!navigation) return;
     const unsubscribe = navigation.addListener('blur', () => {
       cleanupFeed();
     });
@@ -305,6 +345,7 @@ const FeedScreen = ({ navigation }) => {
   }, [navigation]);
 
   useEffect(() => {
+    if (!navigation) return;
     const unsubscribeFocus = navigation.addListener('focus', () => {
       if (videos.length > 0) setActiveVideoId(videos[0].id);
     });
@@ -353,27 +394,39 @@ const FeedScreen = ({ navigation }) => {
   };
 
   return (
-    <FlatList
-      data={videos}
-      keyExtractor={item => item.id}
-      renderItem={renderVideo}
-      pagingEnabled
-      snapToInterval={screenHeight - bottomTabHeight}
-      decelerationRate="fast"
-      disableIntervalMomentum
-      snapToAlignment="start"
-      refreshing={refreshing}
-      onRefresh={loadInitial}
-      onEndReached={loadMore}
-      onEndReachedThreshold={0.5}
-      onViewableItemsChanged={onViewableItemsChanged}
-      viewabilityConfig={viewabilityConfig}
-      removeClippedSubviews={true}
-      maxToRenderPerBatch={2}
-      windowSize={3}
-      initialNumToRender={1}
-      updateCellsBatchingPeriod={100}
-    />
+    <View style={{ flex: 1, backgroundColor: 'black' }}>
+      {initialVideo && (
+        <TouchableOpacity 
+          style={styles.backButton}
+          onPress={onClose}
+        >
+          <Ionicons name="close" size={24} color="white" />
+        </TouchableOpacity>
+      )}
+      <FlatList
+        data={videos}
+        keyExtractor={item => item.id}
+        renderItem={renderVideo}
+        pagingEnabled
+        snapToInterval={screenHeight - bottomTabHeight}
+        decelerationRate="fast"
+        disableIntervalMomentum
+        snapToAlignment="start"
+        refreshing={refreshing}
+        onRefresh={loadInitial}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={2}
+        windowSize={3}
+        initialNumToRender={1}
+        updateCellsBatchingPeriod={100}
+        getItemLayout={getItemLayout}
+        initialScrollIndex={initialScrollIndex >= 0 ? initialScrollIndex : undefined}
+      />
+    </View>
   );
 };
 
@@ -586,11 +639,15 @@ const RecordScreen = ({ navigation }) => {
         recordingStartTime.current = Date.now();  // Set start time
         await cleanupCache();
         setRecording(true);
+
+        // Start recording
         await cameraRef.current.startRecording({
           onRecordingFinished: async (video) => {
             try {
               setUploading(true);
               setUploadSuccess(false);
+
+              // Upload video first
               const filename = `videos/${Date.now()}.mp4`;
               const storageRef = ref(storage, filename);
               const response = await fetch(`file://${video.path}`);
@@ -598,9 +655,13 @@ const RecordScreen = ({ navigation }) => {
               await uploadBytes(storageRef, blob);
               const videoUrl = await getDownloadURL(storageRef);
               
-              // Store video with all recorded pose data
+              // Upload the thumbnail we captured during recording
+              const thumbnailUrl = await uploadThumbnail.current;
+              
+              // Store video with thumbnail URL and pose data
               await addDoc(collection(db, "videos"), { 
-                videoUrl, 
+                videoUrl,
+                thumbnailUrl,
                 createdAt: Date.now(),
                 poseData: recordedPoseData.current.length > 0 ? recordedPoseData.current : null
               });
@@ -610,7 +671,8 @@ const RecordScreen = ({ navigation }) => {
                 setUploading(false);
                 setUploadSuccess(false);
               }, 1500);
-            } catch {
+            } catch (error) {
+              console.error('Upload error:', error);
               setUploading(false);
             }
           },
@@ -620,12 +682,40 @@ const RecordScreen = ({ navigation }) => {
           videoBitRate: 2000000,
           fps: 30
         });
+
+        // Capture thumbnail after a short delay to ensure camera is stable
+        setTimeout(async () => {
+          try {
+            const thumbnailPhoto = await cameraRef.current.takePhoto({
+              quality: 0.7,
+              skipMetadata: true
+            });
+            
+            const thumbnailFilename = `thumbnails/${Date.now()}.jpg`;
+            const thumbnailRef = ref(storage, thumbnailFilename);
+            const thumbnailResponse = await fetch(`file://${thumbnailPhoto.path}`);
+            const thumbnailBlob = await thumbnailResponse.blob();
+            await uploadBytes(thumbnailRef, thumbnailBlob);
+            uploadThumbnail.current = getDownloadURL(thumbnailRef);
+          } catch (error) {
+            console.error('Thumbnail capture error:', error);
+          }
+        }, 500); // Wait 500ms after recording starts
       }
     } catch {
       setRecording(false);
     }
   };
   
+  // Add ref for storing thumbnail URL promise
+  const uploadThumbnail = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      uploadThumbnail.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     const unsubscribeBlur = navigation.addListener('blur', cleanupRecord);
     return () => {
@@ -693,12 +783,165 @@ const RecordScreen = ({ navigation }) => {
   );
 };
 
-/* Profile Screen: A simple placeholder */
-const ProfileScreen = () => (
-  <View style={{flex:1, alignItems:'center', justifyContent:'center'}}>
-    <Text>Profile Screen</Text>
-  </View>
-);
+/* Profile Screen: Displays user profile and video grid */
+const ProfileScreen = ({ navigation }) => {
+  const [videos, setVideos] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+  const dimensions = Dimensions.get('window');
+  const numColumns = 3;
+  const tileSize = dimensions.width / numColumns;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 50,
+    minimumViewTime: 300,
+  });
+
+  const fetchVideos = async () => {
+    try {
+      const videosQuery = query(
+        collection(db, "videos"),
+        orderBy("createdAt", "desc")
+      );
+      const querySnapshot = await getDocs(videosQuery);
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('Error fetching videos:', error);
+      return [];
+    }
+  };
+
+  const loadVideos = async () => {
+    const vids = await fetchVideos();
+    setVideos(vids);
+    setIsLoading(false);
+  };
+
+  // Initial load
+  useEffect(() => {
+    loadVideos();
+  }, []);
+
+  // Refresh on focus
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadVideos();
+    });
+
+    return unsubscribe;
+  }, [navigation]);
+
+  // Memoized tile component for better performance
+  const VideoTile = React.memo(({ item }) => {
+    const [thumbnailError, setThumbnailError] = useState(false);
+    
+    return (
+      <TouchableOpacity 
+        onPress={() => setSelectedVideo(item)}
+        style={{
+          width: tileSize,
+          height: tileSize,
+          padding: 1
+        }}
+      >
+        {item.thumbnailUrl && !thumbnailError ? (
+          <Image
+            source={{ uri: item.thumbnailUrl }}
+            style={{
+              width: '100%',
+              height: '100%',
+              backgroundColor: '#222'
+            }}
+            onError={() => setThumbnailError(true)}
+          />
+        ) : (
+          <View style={{
+            width: '100%',
+            height: '100%',
+            backgroundColor: '#222',
+            justifyContent: 'center',
+            alignItems: 'center'
+          }}>
+            <Ionicons name="play-circle-outline" size={30} color="#666" />
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  });
+
+  const renderVideoTile = useCallback(({ item }) => (
+    <VideoTile item={item} />
+  ), []);
+
+  const getItemLayout = useCallback((data, index) => ({
+    length: tileSize,
+    offset: tileSize * Math.floor(index / numColumns),
+    index,
+  }), [tileSize, numColumns]);
+
+  if (selectedVideo) {
+    return (
+      <View style={{ flex: 1, backgroundColor: 'black' }}>
+        <FeedScreen 
+          navigation={navigation}
+          initialVideo={selectedVideo}
+          videos={videos}
+          onClose={() => setSelectedVideo(null)}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.container, { backgroundColor: 'black' }]}>
+      {/* Profile Header */}
+      <View style={styles.profileHeader}>
+        <View style={styles.profileImageContainer}>
+          <View style={styles.profileImage}>
+            <Ionicons name="barbell-outline" size={40} color="white" />
+          </View>
+        </View>
+        <Text style={styles.username}>Weightlifter</Text>
+        <View style={styles.statsContainer}>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{videos.length}</Text>
+            <Text style={styles.statLabel}>Videos</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>0</Text>
+            <Text style={styles.statLabel}>Following</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>0</Text>
+            <Text style={styles.statLabel}>Followers</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Video Grid */}
+      {isLoading ? (
+        <ActivityIndicator size="large" color="white" style={{ marginTop: 20 }} />
+      ) : (
+        <FlatList
+          data={videos}
+          renderItem={renderVideoTile}
+          keyExtractor={item => item.id}
+          numColumns={numColumns}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 49 }}
+          removeClippedSubviews={true}
+          maxToRenderPerBatch={9}
+          windowSize={5}
+          initialNumToRender={9}
+          getItemLayout={getItemLayout}
+          viewabilityConfig={viewabilityConfig.current}
+        />
+      )}
+    </View>
+  );
+};
 
 const Tab = createBottomTabNavigator();
 const App = () => {
@@ -816,6 +1059,57 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  container: {
+    flex: 1,
+  },
+  profileHeader: {
+    padding: 20,
+    alignItems: 'center',
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#333',
+  },
+  profileImageContainer: {
+    marginBottom: 15,
+  },
+  profileImage: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  username: {
+    color: 'white',
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 15,
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    marginBottom: 15,
+  },
+  statItem: {
+    alignItems: 'center',
+  },
+  statNumber: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  statLabel: {
+    color: '#999',
+    fontSize: 14,
+  },
+  backButton: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    zIndex: 1,
+    padding: 10,
   },
 });
 
