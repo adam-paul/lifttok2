@@ -1,0 +1,71 @@
+---
+description: React Native Vector Icons Setup
+globs: 
+---
+# React Native Vector Icons Setup
+
+Rules for properly setting up vector icons in a React Native project to ensure icons display correctly.
+
+<rule>
+name: vector_icons_setup
+description: Standards for setting up React Native Vector Icons in Android
+filters:
+  # Match build.gradle files
+  - type: file_path
+    pattern: "android/app/build.gradle$"
+  # Match vector icons imports
+  - type: content
+    pattern: "import.*react-native-vector-icons"
+
+actions:
+  - type: suggest
+    message: |
+      When using React Native Vector Icons:
+
+      1. Create the fonts directory if it doesn't exist:
+         ```bash
+         mkdir -p android/app/src/main/assets/fonts
+         ```
+
+      2. Copy the icon fonts to the assets directory:
+         ```bash
+         cp node_modules/react-native-vector-icons/Fonts/Ionicons.ttf android/app/src/main/assets/fonts/
+         ```
+         Note: Copy other font files if using other icon sets (FontAwesome, Material, etc.)
+
+      3. Add the sourceSet configuration to android/app/build.gradle:
+         ```gradle
+         android {
+             // ... other config ...
+             sourceSets {
+                 main {
+                     assets.srcDirs += ['src/main/assets']
+                 }
+             }
+         }
+         ```
+
+      4. Clean and rebuild:
+         ```bash
+         cd android && ./gradlew clean && cd .. && npx react-native run-android
+         ```
+
+      Common issues:
+      - If icons show as boxes or Chinese characters, the fonts weren't properly copied
+      - If icons don't show at all, the sourceSet configuration might be missing
+      - Always clean build after adding fonts
+
+examples:
+  - input: |
+      // Bad: Missing fonts directory
+      android/app/src/main/assets/Ionicons.ttf
+
+      // Good: Correct fonts directory structure
+      android/app/src/main/assets/fonts/Ionicons.ttf
+    output: "Correctly structured vector icons setup"
+
+metadata:
+  priority: medium
+  version: 1.0
+  tags: ["react-native", "android", "vector-icons", "fonts"]
+</rule> 

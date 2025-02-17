@@ -7,8 +7,8 @@ import {Camera, useCameraPermission, useMicrophonePermission, useCameraDevice} f
 import Video from 'react-native-video';
 import Svg, {Line, Circle} from 'react-native-svg';
 import {db, storage} from './firebase';
-import {collection, addDoc, getDocs, query, orderBy, startAfter} from 'firebase/firestore';
-import {ref, uploadBytes, getDownloadURL} from 'firebase/storage';
+import {collection, addDoc, getDocs, query, orderBy, startAfter, deleteDoc, doc} from 'firebase/firestore';
+import {ref, uploadBytes, getDownloadURL, deleteObject} from 'firebase/storage';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 
 const {PoseDetectionModule} = NativeModules;
@@ -788,6 +788,8 @@ const ProfileScreen = ({ navigation }) => {
   const [videos, setVideos] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [selectedForDeletion, setSelectedForDeletion] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const dimensions = Dimensions.get('window');
   const numColumns = 3;
   const tileSize = dimensions.width / numColumns;
@@ -819,6 +821,33 @@ const ProfileScreen = ({ navigation }) => {
     setIsLoading(false);
   };
 
+  const deleteVideo = async () => {
+    if (!selectedForDeletion || isDeleting) return;
+
+    setIsDeleting(true);
+    try {
+      // Delete from Firestore
+      await deleteDoc(doc(db, "videos", selectedForDeletion.id));
+
+      // Delete video and thumbnail from Storage
+      const videoRef = ref(storage, selectedForDeletion.videoUrl);
+      const thumbnailRef = ref(storage, selectedForDeletion.thumbnailUrl);
+      
+      await Promise.all([
+        deleteObject(videoRef),
+        deleteObject(thumbnailRef)
+      ]);
+
+      // Update UI
+      setVideos(prev => prev.filter(v => v.id !== selectedForDeletion.id));
+      setSelectedForDeletion(null);
+    } catch (error) {
+      console.error('Error deleting video:', error);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   // Initial load
   useEffect(() => {
     loadVideos();
@@ -836,10 +865,18 @@ const ProfileScreen = ({ navigation }) => {
   // Memoized tile component for better performance
   const VideoTile = React.memo(({ item }) => {
     const [thumbnailError, setThumbnailError] = useState(false);
+    const isSelected = selectedForDeletion?.id === item.id;
     
     return (
       <TouchableOpacity 
-        onPress={() => setSelectedVideo(item)}
+        onPress={() => {
+          if (selectedForDeletion) {
+            setSelectedForDeletion(selectedForDeletion.id === item.id ? null : item);
+          } else {
+            setSelectedVideo(item);
+          }
+        }}
+        onLongPress={() => setSelectedForDeletion(item)}
         style={{
           width: tileSize,
           height: tileSize,
@@ -847,15 +884,22 @@ const ProfileScreen = ({ navigation }) => {
         }}
       >
         {item.thumbnailUrl && !thumbnailError ? (
-          <Image
-            source={{ uri: item.thumbnailUrl }}
-            style={{
-              width: '100%',
-              height: '100%',
-              backgroundColor: '#222'
-            }}
-            onError={() => setThumbnailError(true)}
-          />
+          <View>
+            <Image
+              source={{ uri: item.thumbnailUrl }}
+              style={{
+                width: '100%',
+                height: '100%',
+                backgroundColor: '#222'
+              }}
+              onError={() => setThumbnailError(true)}
+            />
+            {isSelected && (
+              <View style={styles.selectedOverlay}>
+                <Ionicons name="checkmark-circle" size={30} color="white" />
+              </View>
+            )}
+          </View>
         ) : (
           <View style={{
             width: '100%',
@@ -865,6 +909,11 @@ const ProfileScreen = ({ navigation }) => {
             alignItems: 'center'
           }}>
             <Ionicons name="play-circle-outline" size={30} color="#666" />
+            {isSelected && (
+              <View style={styles.selectedOverlay}>
+                <Ionicons name="checkmark-circle" size={30} color="white" />
+              </View>
+            )}
           </View>
         )}
       </TouchableOpacity>
@@ -873,7 +922,7 @@ const ProfileScreen = ({ navigation }) => {
 
   const renderVideoTile = useCallback(({ item }) => (
     <VideoTile item={item} />
-  ), []);
+  ), [selectedForDeletion]);
 
   const getItemLayout = useCallback((data, index) => ({
     length: tileSize,
@@ -924,20 +973,38 @@ const ProfileScreen = ({ navigation }) => {
       {isLoading ? (
         <ActivityIndicator size="large" color="white" style={{ marginTop: 20 }} />
       ) : (
-        <FlatList
-          data={videos}
-          renderItem={renderVideoTile}
-          keyExtractor={item => item.id}
-          numColumns={numColumns}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 49 }}
-          removeClippedSubviews={true}
-          maxToRenderPerBatch={9}
-          windowSize={5}
-          initialNumToRender={9}
-          getItemLayout={getItemLayout}
-          viewabilityConfig={viewabilityConfig.current}
-        />
+        <>
+          <FlatList
+            data={videos}
+            renderItem={renderVideoTile}
+            keyExtractor={item => item.id}
+            numColumns={numColumns}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 49 }}
+            removeClippedSubviews={true}
+            maxToRenderPerBatch={9}
+            windowSize={5}
+            initialNumToRender={9}
+            getItemLayout={getItemLayout}
+            viewabilityConfig={viewabilityConfig.current}
+          />
+          {selectedForDeletion && (
+            <TouchableOpacity 
+              style={[
+                styles.deleteButton,
+                isDeleting && styles.deleteButtonDisabled
+              ]}
+              onPress={deleteVideo}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <ActivityIndicator color="white" size="small" />
+              ) : (
+                <Ionicons name="trash-outline" size={30} color="white" />
+              )}
+            </TouchableOpacity>
+          )}
+        </>
       )}
     </View>
   );
@@ -1110,6 +1177,26 @@ const styles = StyleSheet.create({
     left: 10,
     zIndex: 1,
     padding: 10,
+  },
+  selectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteButton: {
+    position: 'absolute',
+    bottom: 20,
+    alignSelf: 'center',
+    backgroundColor: '#FF3B30',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteButtonDisabled: {
+    backgroundColor: '#FF3B3080', // 50% opacity
   },
 });
 

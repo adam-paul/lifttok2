@@ -1,0 +1,55 @@
+---
+description: Code Flow Analysis
+globs: 
+---
+# Code Flow Analysis
+
+Rules for systematically debugging issues by analyzing code flow.
+
+<rule>
+name: code_flow_analysis
+description: Standards for debugging through systematic code flow analysis
+filters:
+  - type: event
+    pattern: "debug_required"
+  - type: content
+    pattern: "error|undefined|failed"
+
+actions:
+  - type: suggest
+    message: |
+      When debugging issues, especially in async/IO operations:
+
+      1. Start Point Identification:
+         - Identify the user action or trigger point
+         - Locate the corresponding code entry point
+      
+      2. Flow Mapping:
+         - Track variable states and function calls
+         - Note async operations and their callbacks
+         - Pay special attention to platform-specific requirements
+      
+      3. State Analysis:
+         - Document expected state at each step
+         - Compare with actual behavior
+         - Identify first point of divergence
+      
+      4. Minimal Fix Application:
+         - Apply fixes only at the identified point of failure
+         - Maintain existing code structure where possible
+         - Test the entire flow after fix
+
+examples:
+  - input: |
+      // Error: Network request failed
+      const response = await fetch(video.path);
+      
+      // Analysis shows video.path needs platform-specific prefix
+      const response = await fetch(`file://${video.path}`);
+    output: "Fixed through systematic flow analysis"
+
+metadata:
+  priority: high
+  version: 1.0
+  tags: ["debugging", "async", "platform-specific"]
+</rule> 

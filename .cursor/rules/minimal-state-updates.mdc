@@ -1,0 +1,63 @@
+---
+description: Minimal State Updates Rule
+globs: 
+---
+# Minimal State Updates Rule
+
+Standards for implementing efficient state updates in React Native applications.
+
+<rule>
+name: minimal_state_updates
+description: Guidelines for implementing state updates with minimal code and optimal performance
+
+filters:
+  - type: file_extension
+    pattern: "\\.(js|jsx|ts|tsx)$"
+  - type: content
+    pattern: "useState|useEffect|setState"
+
+actions:
+  - type: suggest
+    message: |
+      When implementing state updates, especially with external data:
+
+      1. Minimize data fetching:
+         - Only fetch new or changed data
+         - Use timestamps or IDs for incremental updates
+         - Avoid re-fetching existing data
+
+      2. Optimize state updates:
+         - Append/prepend new data to existing state
+         - Use functional updates (prev => [...new, ...prev])
+         - Avoid full state replacements
+
+      3. Use built-in features:
+         - Leverage platform features (pull-to-refresh)
+         - Use existing lifecycle hooks (focus events)
+         - Avoid custom implementations when standard ones exist
+
+      4. Query optimization:
+         - Use database filters to limit data transfer
+         - Include proper ordering in queries
+         - Structure queries to match UI requirements
+
+examples:
+  - input: |
+      // Bad: Fetching all data on update
+      const refresh = async () => {
+        const data = await fetchAllItems();
+        setItems(data);
+      };
+
+      // Good: Only fetching new data
+      const refresh = async () => {
+        const lastItem = items[0];
+        const newData = await fetchItemsAfter(lastItem.timestamp);
+        setItems(prev => [...newData, ...prev]);
+      };
+    output: "Efficient incremental state update"
+
+metadata:
+  priority: high
+  version: 1.0
+</rule> 

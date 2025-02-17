@@ -1,9 +1,42 @@
 **/node_modules/
 
-android/
-ios/
+# Android
+android/**/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+android/*.iml
+android/.project
+android/.settings/
+android/app/release/
+android/app/src/main/assets/
+android/app/.cxx/
+android/app/src/main/res/
 
-.cursor/
+# iOS
+ios/Pods/
+ios/build/
+ios/*.pbxuser
+ios/!default.pbxuser
+ios/*.mode1v3
+ios/!default.mode1v3
+ios/*.mode2v3
+ios/!default.mode2v3
+ios/*.perspectivev3
+ios/!default.perspectivev3
+ios/xcuserdata
+ios/*.xccheckout
+ios/*.moved-aside
+ios/DerivedData
+ios/*.hmap
+ios/*.ipa
+ios/*.xcuserstate
+ios/project.xcworkspace
+
+# General
+.DS_Store
+.env
+*.log
 
 lifttok/
 

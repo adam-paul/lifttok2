@@ -1,0 +1,81 @@
+---
+description: Package Manager Rules
+globs: 
+---
+# Package Manager Rules
+
+<rule>
+name: package_manager_standards
+description: Standards for package management in the project
+priority: high
+
+guidelines: |
+  1. Always use Bun as the package manager
+     - NO npm
+     - NO yarn
+     - NO pnpm
+     - ONLY bun
+
+  2. Common commands translation:
+     ```
+     npm install -> bun install
+     npm run -> bun run
+     npm add -> bun add
+     npm remove -> bun remove
+     ```
+
+  3. For clean reinstalls:
+     ```
+     rm -rf node_modules bun.lockb
+     bun install
+     ```
+
+  4. Performance benefits:
+     - Bun is significantly faster than npm/yarn
+     - Better dependency resolution
+     - Native support for monorepos
+     - Built-in bundling and transpilation
+
+  5. Version control:
+     - Always commit bun.lockb
+     - Never commit node_modules
+
+  6. Scripts in package.json should use bun syntax:
+     ```json
+     {
+       "scripts": {
+         "start": "bun run index.js",
+         "android": "bun run react-native run-android"
+       }
+     }
+     ```
+
+examples:
+  - description: "Installing dependencies"
+    incorrect: |
+      npm install
+      yarn install
+      pnpm install
+    correct: |
+      bun install
+
+  - description: "Adding a new dependency"
+    incorrect: |
+      npm add react-native-vision-camera
+      yarn add react-native-vision-camera
+    correct: |
+      bun add react-native-vision-camera
+
+  - description: "Running scripts"
+    incorrect: |
+      npm run android
+      yarn android
+    correct: |
+      bun run android
+
+metadata:
+  version: 1.0
+  created: 2024-02-12
+  author: "Assistant"
+  applies_to: ["package.json", "*.lock", "node_modules"]
+</rule> 

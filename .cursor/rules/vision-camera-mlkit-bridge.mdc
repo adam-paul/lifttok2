@@ -1,0 +1,71 @@
+---
+description: Vision Camera to ML Kit Bridge Rule
+globs: 
+---
+# Vision Camera to ML Kit Bridge Rule
+
+<rule>
+name: vision_camera_mlkit_bridge
+description: Standards for bridging React Native Vision Camera with ML Kit for image processing
+
+key_insights:
+  - Vision Camera's takePhoto() returns file paths, not raw data
+  - ML Kit can process images directly from file paths
+  - Avoid raw byte array transfers between JS and Native code
+  - File-based approach is more efficient than raw data transfer
+
+implementation:
+  react_native:
+    - Use takePhoto() without format specification
+    - Access frame.path instead of frame.data
+    - Pass file path to native module
+    example: |
+      const frame = await cameraRef.current.takePhoto({
+        qualityPrioritization: 'speed',
+        skipMetadata: true,
+        flash: 'off',
+        enableAutoStabilization: false,
+        enableShutterSound: false
+      });
+      
+      if (!frame.path) return;
+      
+      const result = await NativeModule.process(
+        frame.path,
+        frame.width,
+        frame.height
+      );
+
+  kotlin:
+    - Use Dynamic type for flexible input handling
+    - Handle both string paths and byte arrays
+    - Use InputImage.fromFilePath for file-based processing
+    example: |
+      @ReactMethod
+      fun process(imageData: Dynamic, width: Int, height: Int, promise: Promise) {
+        val image = when {
+          imageData.type == ReadableType.String -> {
+            val path = imageData.asString()
+            InputImage.fromFilePath(reactApplicationContext, 
+              android.net.Uri.fromFile(File(path)))
+          }
+          // ... handle other cases ...
+        }
+      }
+
+anti_patterns:
+  - Don't try to extract raw bytes from Vision Camera frames
+  - Don't use frame processors for ML Kit integration
+  - Don't assume frame.data will contain usable image data
+  - Don't convert between different image formats unnecessarily
+
+metadata:
+  priority: high
+  version: 1.0
+  tags:
+    - react-native
+    - vision-camera
+    - ml-kit
+    - image-processing
+    - native-bridge
+</rule> 
